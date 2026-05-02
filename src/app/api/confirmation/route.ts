@@ -29,17 +29,27 @@ const confirmationSchema = z.object({
   additionalNotes: z.string().optional().default(''),
 })
 
+class SessionError extends Error {}
+
 async function validateSession() {
   const session = await getServerSession(authOptions)
   if (!session?.user?.id) {
-    throw new Error('Unauthorized')
+    console.log('validateSession: no session or missing user id', { session })
+    throw new SessionError('Unauthorized')
   }
   return session
 }
 
 export async function POST(req: Request) {
   try {
+    console.log('POST /api/confirmation called')
+    try {
+      console.log('Request cookie header:', req.headers.get('cookie'))
+    } catch {
+      console.log('Unable to read cookie header')
+    }
     const session = await validateSession()
+    console.log('Session user id for POST:', session?.user?.id)
     const data = await req.json()
     console.log('Received confirmation data:', data)
     const validatedData = confirmationSchema.parse(data)
@@ -83,20 +93,25 @@ export async function POST(req: Request) {
     })
     console.log('Created/Updated confirmation:', confirmation)
 
-    // Send confirmation email
-    await sendConfirmationEmail(
-      application.email ?? '',
-      application.user.profile?.parentEmail ?? '',
-      validatedData.studentName,
-      validatedData.parentName,
-      validatedData
-    )
 
     // Update application status to CONFIRMED
     const updatedApplication = await prisma.application.update({
       where: { id: application.id },
       data: { status: 'CONFIRMED' }
     })
+
+    // Send confirmation email (non-fatal): log errors but still return success
+    try {
+      await sendConfirmationEmail(
+        application.email ?? '',
+        application.user.profile?.parentEmail ?? '',
+        validatedData.studentName,
+        validatedData.parentName,
+        validatedData
+      )
+    } catch (mailErr) {
+      console.error('Failed to send confirmation email (non-fatal):', mailErr)
+    }
 
     return NextResponse.json({ 
       confirmation, 
@@ -105,7 +120,7 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error('Confirmation error:', error instanceof Error ? error.message : 'Unknown error')
     
-    if (error instanceof Error && error.message === 'Unauthorized') {
+    if (error instanceof SessionError) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
     
@@ -123,7 +138,9 @@ export async function POST(req: Request) {
 
 export async function GET() {
   try {
+    console.log('GET /api/confirmation called')
     const session = await validateSession()
+    console.log('Session user id for GET:', session?.user?.id)
     
     const application = await prisma.application.findUnique({
       where: { userId: session.user.id },
@@ -140,7 +157,7 @@ export async function GET() {
   } catch (error) {
     console.error('Confirmation fetch error:', error)
     
-    if (error instanceof Error && error.message === 'Unauthorized') {
+    if (error instanceof SessionError) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
     
